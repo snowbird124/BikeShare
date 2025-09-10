@@ -1,0 +1,62 @@
+---
+title: "BikeShareAnalysis"
+format: pdf
+editor: visual
+---
+
+## EDA stuff
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(vroom)
+library(patchwork)
+
+train <- vroom('/Users/laynelarson12/Documents/GitHub/STAT 348/BikeShare/train.csv') %>% select(-casual, -registered)
+test <- vroom('/Users/laynelarson12/Documents/GitHub/STAT 348/BikeShare/test.csv') 
+
+
+weather <- ggplot(data = train, aes(x = weather)) +
+  geom_bar()
+
+temp <- ggplot(data = train, aes(x = temp, y = count)) +
+  geom_point() +
+  geom_smooth(se = FALSE)
+
+plot3 <- ggplot(data = train, aes(x = humidity, y = count)) +
+  geom_point() +
+  geom_smooth(se = FALSE)
+
+plot4 <- ggplot(data = train, aes(x = season, y = count)) +
+  geom_point()
+
+(weather + temp) / (plot3 + plot4)
+```
+
+## Linear Model and stuff
+
+```{r}
+
+## Setup and Fit the Linear Regression Model
+my_linear_model <- linear_reg() %>% 
+set_engine("lm") %>%
+set_mode("regression") %>% 
+fit(formula=count~.-datetime, data=train)
+
+## Generate Predictions Using Linear Model
+bike_predictions <- predict(my_linear_model,
+                            new_data=test) 
+bike_predictions 
+
+
+## Format the Predictions for Submission to Kaggle
+kaggle_submission <- bike_predictions %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",")
+```
