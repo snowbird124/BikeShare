@@ -60,3 +60,89 @@ mutate(datetime=as.character(format(datetime))) #needed for right format to Kagg
 ## Write out the file
 vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",")
 ```
+
+## Recipe and Workflow stuff
+
+```{r}
+
+bike_recipe <- recipe(count ~ ., data = train) %>%
+  step_log(all_outcomes(), base = exp(1), skip = TRUE) %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
+  step_mutate(weather = factor(weather)) %>%
+  step_date(datetime, features = "dow") %>%
+  step_time(datetime, features = "hour") %>%
+  step_rm(datetime) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%  # <--- NEW
+  step_zv(all_predictors()) %>%
+  step_corr(all_predictors(), threshold = 0.5)
+  
+
+## Workflow
+
+bike_recipe_model <- linear_reg() %>%
+  set_engine('lm') %>%
+  set_mode("regression")
+
+bike_workflow <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(bike_recipe_model) %>%
+  fit(data=train)
+
+bike_recipe_preds <- predict(bike_workflow, new_data = test) %>%
+  mutate(.pred = exp(.pred))   # back-transform
+
+
+## Format the Predictions for Submission to Kaggle
+kaggle_submission_recipe1 <- bike_recipe_preds %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission_recipe1, file="./bike_recipe_preds.csv", delim=",")
+```
+
+## 
+
+## Penalized Regression
+
+```{r}
+
+# --- Try multiple penalized models ---
+penalties <- c(0.01, 0.1, 0.5, 1, 2)
+mixtures  <- c(0, 0.25, 0.5, 0.75, 1)  # ridge -> lasso
+
+results <- list()
+
+for (p in penalties) {
+  for (m in mixtures) {
+    model <- linear_reg(penalty = p, mixture = m) %>%
+      set_engine("glmnet") %>%
+      set_mode("regression")
+
+    wf <- workflow() %>%
+      add_recipe(bike_recipe) %>%
+      add_model(model) %>%
+      fit(data = train)
+
+    preds <- predict(wf, new_data = test) %>%
+      mutate(.pred = exp(.pred)) # back-transform log(count)
+
+    kaggle <- preds %>%
+      bind_cols(test) %>%
+      select(datetime, .pred) %>%
+      rename(count = .pred) %>%
+      mutate(count = pmax(0, count),
+             datetime = as.character(format(datetime)))
+
+    filename <- paste0("./glmnet_p", p, "_m", m, ".csv")
+    vroom_write(kaggle, file = filename, delim = ",")
+
+    results[[paste(p, m, sep = "_")]] <- kaggle
+  }
+}
+
+```
