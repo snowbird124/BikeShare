@@ -77,6 +77,9 @@ bike_recipe <- recipe(count ~ ., data = train) %>%
   step_zv(all_predictors()) %>%
   step_corr(all_predictors(), threshold = 0.5)
   
+prepped_recipe <- prep(bike_recipe) 
+bake(prepped_recipe, new_data=train)
+
 
 ## Workflow
 
@@ -144,5 +147,65 @@ for (p in penalties) {
     results[[paste(p, m, sep = "_")]] <- kaggle
   }
 }
+
+```
+
+## Tuning and Cross-Validation
+
+```{r}
+
+## Penalized Regression Model
+preg_model <- linear_reg(penalty=tune(),
+                         mixture=tune()) %>%
+  set_engine("glmnet")
+
+## Set Workflow
+preg_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(preg_model)
+
+## Grid of values to tune over
+grid_of_tuning_params <- grid_regular(penalty(),
+                                      mixture(),
+                                      levels=5)
+
+## Split data for CV
+folds <- vfold_cv(train, v = 5, repeats = 1)
+
+## Run the CV
+CV_results <- preg_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+## Plot results
+collect_metrics(CV_results) %>%
+  filter(.metric=="rmse") %>%
+  ggplot(data=., aes(x=penalty, y=mean, color=factor(mixture))) +
+  geom_line()
+
+## Find best tuning parameters
+bestTune <- CV_results %>%
+  select_best(metric="rmse")
+
+## Finalize wf and fit it
+final_wf <- preg_wf %>%
+  finalize_workflow(bestTune) %>%
+  fit(data=train)
+
+## Predict
+CV_preds <- final_wf %>%
+  predict(new_data = test)
+
+## Output to kaggle
+kaggle_submission <- CV_preds %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
 
 ```
