@@ -209,3 +209,27 @@ mutate(datetime=as.character(format(datetime))) #needed for right format to Kagg
 vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
 
 ```
+
+## Regression Trees
+
+```{r}
+
+library(tidymodels)
+
+my_mod <- decision_tree(tree_depth = tune(),
+cost_complexity = tune(),
+min_n=tune()) %>% #Type of model
+set_engine("rpart") %>% # What R function to use
+set_mode("regression")
+
+## Create a workflow with model & recipe
+
+## Set up grid of tuning values
+
+## Set up K-fold CV
+
+## Find best tuning parameters
+
+## Finalize workflow and predict
+
+```
