@@ -78,7 +78,7 @@ bike_recipe <- recipe(count ~ ., data = train) %>%
   step_corr(all_predictors(), threshold = 0.5)
   
 prepped_recipe <- prep(bike_recipe) 
-bake(prepped_recipe, new_data=train)
+baked_recipe <- bake(prepped_recipe, new_data=train)
 
 
 ## Workflow
@@ -214,22 +214,116 @@ vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
 
 ```{r}
 
-library(tidymodels)
-
-my_mod <- decision_tree(tree_depth = tune(),
-cost_complexity = tune(),
-min_n=tune()) %>% #Type of model
-set_engine("rpart") %>% # What R function to use
-set_mode("regression")
+## tree model
+tree_mod <- decision_tree(tree_depth = tune(),
+                          cost_complexity = tune(),
+                          min_n=tune()) %>% #Type of model
+  set_engine("rpart") %>% # What R function to use
+  set_mode("regression")
 
 ## Create a workflow with model & recipe
+tree_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(tree_mod)
 
 ## Set up grid of tuning values
+grid_of_tree_params <- grid_regular(tree_depth(),
+                                      cost_complexity(),
+                                      min_n(),
+                                      levels=5)
 
 ## Set up K-fold CV
+folds <- vfold_cv(train, v = 5, repeats = 1)
+
+## Run the CV
+CV_tree_results <- tree_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tree_params,
+            metrics = metric_set(rmse))
+
+## Plot results
+collect_metrics(CV_results) %>%
+  filter(.metric=="rmse") %>%
+  ggplot(data=., aes(x=penalty, y=mean, color=factor(mixture))) +
+  geom_line()
 
 ## Find best tuning parameters
+bestTreeTune <- CV_tree_results %>%
+  select_best(metric="rmse")
 
-## Finalize workflow and predict
+
+## Finalize workflow and Predict
+final_wf <- tree_wf %>%
+  finalize_workflow(bestTreeTune) %>%
+  fit(data=train)
+
+CV_tree_preds <- final_wf %>%
+  predict(new_data = test)
+
+## Output to kaggle
+kaggle_submission <- CV_tree_preds %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(count = exp(count)) %>%
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
+```
+
+## Random Forest
+
+```{r}
+library(rpart)
+library(tidymodels)
+forest_mod <- rand_forest(mtry = tune(),
+                          min_n = tune(),
+                          trees = 1000) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+forest_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(forest_mod)
+
+## Set up grid of tuning values
+grid_of_tuning_params <- grid_regular(mtry(range=c(1,ncol(baked_recipe)-1)),
+                                      min_n())
+
+## Set up K-fold CV
+folds <- vfold_cv(train, v = 5, repeats = 1)
+
+## Run the CV
+CV_forest_results <- forest_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+## Find best tuning parameters
+bestForestTune <- CV_forest_results %>%
+  select_best(metric="rmse")
+
+
+## Finalize workflow and Predict
+final_wf <- forest_wf %>%
+  finalize_workflow(bestForestTune) %>%
+  fit(data=train)
+
+CV_forest_preds <- final_wf %>%
+  predict(new_data = test)
+
+## Output to kaggle
+kaggle_submission <- CV_forest_preds %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(count = exp(count)) %>%
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
 
 ```
