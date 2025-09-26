@@ -71,11 +71,17 @@ bike_recipe <- recipe(count ~ ., data = train) %>%
   step_mutate(weather = factor(weather)) %>%
   step_date(datetime, features = "dow") %>%
   step_time(datetime, features = "hour") %>%
+  step_mutate(
+    hour_of_week = ((as.numeric(datetime_dow) - 1) * 24) + (as.numeric(datetime_hour) - 1)
+  ) %>%
   step_rm(datetime) %>%
   step_dummy(all_nominal_predictors()) %>%
-  step_normalize(all_numeric_predictors()) %>%  # <--- NEW
+  step_normalize(all_numeric_predictors()) %>%
   step_zv(all_predictors()) %>%
   step_corr(all_predictors(), threshold = 0.5)
+
+
+
   
 prepped_recipe <- prep(bike_recipe) 
 baked_recipe <- bake(prepped_recipe, new_data=train)
@@ -290,7 +296,8 @@ forest_wf <- workflow() %>%
 
 ## Set up grid of tuning values
 grid_of_tuning_params <- grid_regular(mtry(range=c(1,ncol(baked_recipe)-1)),
-                                      min_n())
+                                      min_n(),
+                                      levels = )
 
 ## Set up K-fold CV
 folds <- vfold_cv(train, v = 5, repeats = 1)
@@ -316,6 +323,57 @@ CV_forest_preds <- final_wf %>%
 
 ## Output to kaggle
 kaggle_submission <- CV_forest_preds %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(count = exp(count)) %>%
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
+
+```
+
+## Boosting and BART
+
+```{r}
+
+library(bonsai)
+library(lightgbm)
+
+bart_model <- bart(trees=tune()) %>% # BART figures out depth and learn_rate
+  set_engine("dbarts") %>% # might need to install
+  set_mode("regression")
+
+bart_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(bart_model)
+
+grid_of_tuning_params <- grid_regular(trees(),
+                                      levels = 10)
+
+## Set up K-fold CV
+folds <- vfold_cv(train, v = 5, repeats = 1)
+
+## Run the CV
+CV_bart_results <- bart_wf %>%
+  tune_grid(resamples = folds,
+            grid = grid_of_tuning_params,
+            metrics = metric_set(rmse))
+
+bestBartTune <- CV_bart_results %>%
+  select_best(metric="rmse")
+
+final_wf <- bart_wf %>%
+  finalize_workflow(bestBartTune) %>%
+  fit(data=train)
+
+CV_bart_preds <- final_wf %>%
+  predict(new_data = test)
+
+## Output to kaggle
+kaggle_submission <- CV_bart_preds %>%
 bind_cols(., test) %>% #Bind predictions with test data
 select(datetime, .pred) %>% #Just keep datetime and prediction variables
 rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
