@@ -67,20 +67,16 @@ vroom_write(x=kaggle_submission, file="./LinearPreds.csv", delim=",")
 
 bike_recipe <- recipe(count ~ ., data = train) %>%
   step_log(all_outcomes(), base = exp(1), skip = TRUE) %>%
-  step_mutate(weather = ifelse(weather == 4, 3, weather)) %>%
-  step_mutate(weather = factor(weather)) %>%
-  step_date(datetime, features = "dow") %>%
+  step_mutate(weather = ifelse(weather == 4, 3, weather),
+               weekend = ifelse(wday(datetime) %in% c(1,7), 1, 0),
+               rush_hour = ifelse(hour(datetime) %in% c(7:9,16:19) , 1, 0)) %>%
+  step_date(datetime, features = c("month", "year", "dow")) %>%
   step_time(datetime, features = "hour") %>%
-  step_mutate(
-    hour_of_week = ((as.numeric(datetime_dow) - 1) * 24) + (as.numeric(datetime_hour) - 1)
-  ) %>%
   step_rm(datetime) %>%
+  step_interact(terms = ~ temp:humidity + temp:windspeed + season:humidity) %>%
+  step_poly(temp, humidity, degree = 2) %>%
   step_dummy(all_nominal_predictors()) %>%
-  step_normalize(all_numeric_predictors()) %>%
-  step_zv(all_predictors()) %>%
-  step_corr(all_predictors(), threshold = 0.5)
-
-
+  step_normalize(all_numeric_predictors())
 
   
 prepped_recipe <- prep(bike_recipe) 
@@ -384,4 +380,45 @@ mutate(datetime=as.character(format(datetime))) #needed for right format to Kagg
 ## Write out the file
 vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
 
+```
+
+## Stacking
+
+```{r}
+
+## Libraries
+library(agua) 
+
+## Initialize an h2o session
+h2o::h2o.init()
+
+## Define the model
+## max_runtime_secs = how long to let h2o.ai run
+## max_models = how many models to stack
+auto_model <- auto_ml() %>%
+  set_engine("h2o", max_models=10) %>%
+  set_mode("regression")
+
+## Combine into Workflow
+automl_wf <- workflow() %>%
+  add_recipe(bike_recipe) %>%
+  add_model(auto_model) %>%
+  fit(data=train)
+
+## Predict
+stack_preds <- automl_wf %>%
+  predict(new_data = test)
+
+
+## Output to kaggle
+kaggle_submission <- stack_preds %>%
+bind_cols(., test) %>% #Bind predictions with test data
+select(datetime, .pred) %>% #Just keep datetime and prediction variables
+rename(count=.pred) %>% #rename pred to count (for submission to Kaggle)
+mutate(count=pmax(0, count)) %>% #pointwise max of (0, prediction)
+mutate(count = exp(count)) %>%
+mutate(datetime=as.character(format(datetime))) #needed for right format to Kaggle
+
+## Write out the file
+vroom_write(x=kaggle_submission, file="./bike_recipe_preds.csv", delim=",")
 ```
